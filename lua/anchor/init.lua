@@ -2,30 +2,35 @@ local M = {}
 
 local data_path = vim.fn.stdpath("data") .. "/anchor.json"
 
----@type table<string, string[]>
-M.projects = {}
-
----@type table<string, string>
-M.toggle_history = {}
-
--- Cached string to lock down the launch directory context permanently
-local initial_project_root = nil
-
 --- Get the root directory fixed at Neovim startup
 ---@return string
 local function get_project_root()
-    if not initial_project_root then
-        local cwd = vim.fn.getcwd()
-        local root = vim.fs.root(cwd, { ".git", ".hg", "Makefile", "package.json" })
-        initial_project_root = root or cwd
-    end
-    return initial_project_root
+    local cwd  = vim.fn.getcwd()
+    local root = vim.fs.root(cwd, { ".git", ".hg", "Makefile", "package.json" })
+    return root or cwd
 end
+
+
+---@class AnchorConfig
+---@field root_dir string
+
+---@type AnchorConfig
+local default_config = {
+    root_dir = get_project_root(),
+}
+
+M.config             = vim.deepcopy(default_config)
+
+---@type table<string, string[]>
+M.projects           = {}
+
+---@type table<string, string>
+M.toggle_history     = {}
 
 --- Get the list of saved paths for the current project root context
 ---@return string[]
 local function get_current_paths()
-    local root = get_project_root()
+    local root = M.config.root_dir
     if not M.projects[root] then
         M.projects[root] = {}
     end
@@ -35,7 +40,7 @@ end
 --- Execute the directory switch and update the alternating toggle history state
 ---@param target_dir string The absolute path to switch into
 local function execute_cd(target_dir)
-    local root = get_project_root()
+    local root = M.config.root_dir
     local current_dir = vim.fn.getcwd()
 
     if current_dir ~= target_dir then
@@ -113,7 +118,7 @@ end
 
 --- Wipe all stored paths specifically for the active project context
 function M.clear_paths()
-    local root = get_project_root()
+    local root = M.config.root_dir
     M.projects[root] = {}
     save_to_json()
     print("Cleared all paths for this project.")
@@ -126,24 +131,24 @@ function M.toggle_menu()
     vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
     vim.api.nvim_set_option_value("filetype", "anchor", { buf = buf })
 
-    local width = math.floor(vim.o.columns * 0.6)
-    local height = math.floor(vim.o.lines * 0.4)
-    local row = math.floor((vim.o.lines - height) / 2)
-    local col = math.floor((vim.o.columns - width) / 2)
+    local width         = math.floor(vim.o.columns * 0.6)
+    local height        = math.floor(vim.o.lines * 0.4)
+    local row           = math.floor((vim.o.lines - height) / 2)
+    local col           = math.floor((vim.o.columns - width) / 2)
 
-    local project_root = get_project_root()
-    local opts = {
-        relative = "editor",
-        width = width,
-        height = height,
-        row = row,
-        col = col,
-        border = "rounded",
-        title = " Paths (" .. vim.fn.fnamemodify(project_root, ":t") .. ") ",
+    local project_root  = M.config.root_dir
+    local opts          = {
+        relative  = "editor",
+        width     = width,
+        height    = height,
+        row       = row,
+        col       = col,
+        border    = "rounded",
+        title     = " Paths (" .. vim.fn.fnamemodify(project_root, ":t") .. ") ",
         title_pos = "center",
     }
 
-    local win = vim.api.nvim_open_win(buf, true, opts)
+    local win           = vim.api.nvim_open_win(buf, true, opts)
 
     local current_paths = get_current_paths()
     local display_lines = vim.deepcopy(current_paths)
@@ -155,8 +160,8 @@ function M.toggle_menu()
     vim.api.nvim_set_option_value("cursorline", true, { win = win })
 
     local function select_path()
-        local cursor = vim.api.nvim_win_get_cursor(win)
-        local line_num = cursor[1]
+        local cursor     = vim.api.nvim_win_get_cursor(win)
+        local line_num   = cursor[1]
 
         local target_dir = get_current_paths()[line_num]
 
@@ -170,10 +175,10 @@ function M.toggle_menu()
     end
 
     vim.api.nvim_create_autocmd({ "BufLeave", "BufWipeout" }, {
-        buffer = buf,
-        once = true,
+        buffer   = buf,
+        once     = true,
         callback = function()
-            local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+            local lines         = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
             local updated_paths = {}
 
             for _, line in ipairs(lines) do
@@ -191,14 +196,14 @@ function M.toggle_menu()
     local map_opts = { silent = true, buffer = buf }
     vim.keymap.set("n", "<CR>", select_path, map_opts)
     vim.keymap.set("n", "<Esc>", function() vim.api.nvim_win_close(win, true) end, map_opts)
-    vim.keymap.set("n", "q",     function() vim.api.nvim_win_close(win, true) end, map_opts)
+    vim.keymap.set("n", "q", function() vim.api.nvim_win_close(win, true) end, map_opts)
 end
 
 --- Directly switch to a path stored at a specific list index slot
 ---@param index integer The 1-indexed slot number of the target directory
 function M.nav_to(index)
     local current_paths = get_current_paths()
-    local target_dir = current_paths[index]
+    local target_dir    = current_paths[index]
     if target_dir then
         execute_cd(target_dir)
     else
@@ -208,7 +213,7 @@ end
 
 --- Toggle back and forth between the current directory and the last active directory
 function M.toggle_last()
-    local root = get_project_root()
+    local root         = M.config.root_dir
     local previous_dir = M.toggle_history[root]
 
     if previous_dir then
@@ -220,8 +225,10 @@ end
 
 load_from_json()
 
---- Standard setup hook for passing optional user configurations
----@param opts? table Configuration options
-function M.setup(opts) end
+--- Initialize plug-in configuration state with optional user table structures
+---@param opts? AnchorConfig Configuration overrides
+function M.setup(opts)
+    M.config = vim.tbl_deep_extend("force", default_config, opts or {})
+end
 
 return M
